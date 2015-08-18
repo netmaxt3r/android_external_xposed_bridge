@@ -214,6 +214,16 @@ public final class XposedBridge {
 							lpparam.appInfo = null;
 							lpparam.isFirstApplication = true;
 							XC_LoadPackage.callAll(lpparam);
+
+							// Force dex2oat while the system is still booting to ensure that system content providers work.
+							findAndHookMethod("com.android.server.pm.PackageManagerService", cl, "performDexOpt",
+									String.class, String.class, boolean.class, new XC_MethodHook() {
+								@Override
+								protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+									if (getObjectField(param.thisObject, "mDeferredDexOpt") != null)
+										param.args[2] = true;
+								}
+							});
 						}
 					});
 				}
@@ -257,6 +267,7 @@ public final class XposedBridge {
 		if (!SELinuxHelper.getAppDataFileService().checkFileExists(BASE_DIR + "conf/disable_resources")) {
 			hookResources();
 		} else {
+			Log.w(TAG, "Found " + BASE_DIR + "conf/disable_resources, not hooking resources");
 			disableResources = true;
 		}
 	}
@@ -274,6 +285,7 @@ public final class XposedBridge {
 		final Class<?> classGTLR;
 		final Class<?> classResKey;
 		final ThreadLocal<Object> latestResKey = new ThreadLocal<Object>();
+		final String[] conflictingPackages = { "com.sygic.aura" };
 
 		if (Build.VERSION.SDK_INT <= 18) {
 			classGTLR = ActivityThread.class;
@@ -306,6 +318,9 @@ public final class XposedBridge {
 
 				Object result = param.getResult();
 				if (result == null || result instanceof XResources)
+					return;
+
+				if (Arrays.binarySearch(conflictingPackages, AndroidAppHelper.currentPackageName()) == 0)
 					return;
 
 				// replace the returned resources with our subclass
@@ -346,6 +361,9 @@ public final class XposedBridge {
 				protected void afterHookedMethod(MethodHookParam param) throws Throwable {
 					Object result = param.getResult();
 					if (result == null || result instanceof XResources)
+						return;
+
+					if (Arrays.binarySearch(conflictingPackages, AndroidAppHelper.currentPackageName()) == 0)
 						return;
 
 					// replace the returned resources with our subclass
