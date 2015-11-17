@@ -25,6 +25,9 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import com.android.internal.os.RuntimeInit;
+import com.android.internal.os.ZygoteInit;
+
 import android.annotation.SuppressLint;
 import android.app.ActivityThread;
 import android.app.AndroidAppHelper;
@@ -39,10 +42,6 @@ import android.content.res.XResources.XTypedArray;
 import android.os.Build;
 import android.os.Process;
 import android.util.Log;
-
-import com.android.internal.os.RuntimeInit;
-import com.android.internal.os.ZygoteInit;
-
 import dalvik.system.PathClassLoader;
 import de.robv.android.xposed.XC_MethodHook.MethodHookParam;
 import de.robv.android.xposed.callbacks.XC_InitPackageResources;
@@ -215,15 +214,17 @@ public final class XposedBridge {
 							lpparam.isFirstApplication = true;
 							XC_LoadPackage.callAll(lpparam);
 
-							// Force dex2oat while the system is still booting to ensure that system content providers work.
-							findAndHookMethod("com.android.server.pm.PackageManagerService", cl, "performDexOpt",
-									String.class, String.class, boolean.class, new XC_MethodHook() {
-								@Override
-								protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-									if (getObjectField(param.thisObject, "mDeferredDexOpt") != null)
-										param.args[2] = true;
-								}
-							});
+							if (Build.VERSION.SDK_INT >= 21 && Build.VERSION.SDK_INT <= 22) {
+								// Force dex2oat while the system is still booting to ensure that system content providers work.
+								findAndHookMethod("com.android.server.pm.PackageManagerService", cl, "performDexOpt",
+										String.class, String.class, boolean.class, new XC_MethodHook() {
+									@Override
+									protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+										if (getObjectField(param.thisObject, "mDeferredDexOpt") != null)
+											param.args[2] = true;
+									}
+								});
+							}
 						}
 					});
 				}
@@ -558,16 +559,22 @@ public final class XposedBridge {
 			}
 		}
 		callbacks.add(callback);
+
 		if (newMethod) {
 			Class<?> declaringClass = hookMethod.getDeclaringClass();
-			int slot = (runtime == RUNTIME_DALVIK) ? (int) getIntField(hookMethod, "slot") : 0;
-
+			int slot;
 			Class<?>[] parameterTypes;
 			Class<?> returnType;
-			if (hookMethod instanceof Method) {
+			if (runtime == RUNTIME_ART) {
+				slot = 0;
+				parameterTypes = null;
+				returnType = null;
+			} else if (hookMethod instanceof Method) {
+				slot = (int) getIntField(hookMethod, "slot");
 				parameterTypes = ((Method) hookMethod).getParameterTypes();
 				returnType = ((Method) hookMethod).getReturnType();
 			} else {
+				slot = (int) getIntField(hookMethod, "slot");
 				parameterTypes = ((Constructor<?>) hookMethod).getParameterTypes();
 				returnType = null;
 			}
@@ -743,14 +750,6 @@ public final class XposedBridge {
 			Class<?>[] parameterTypes, Class<?> returnType, Object thisObject, Object[] args)
 			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException;
 
-	/** Old method signature to avoid crashes if only XposedBridge.jar is updated, will be removed in the next version */
-	@Deprecated
-	private native synchronized static void hookMethodNative(Class<?> declaringClass, int slot);
-
-	@Deprecated
-	private native static Object invokeOriginalMethodNative(Member method, Class<?>[] parameterTypes, Class<?> returnType, Object thisObject, Object[] args)
-			throws IllegalAccessException, IllegalArgumentException, InvocationTargetException;
-
 	/**
 	 * Basically the same as {@link Method#invoke}, but calls the original method
 	 * as it was before the interception by Xposed. Also, access permissions are not checked.
@@ -779,7 +778,10 @@ public final class XposedBridge {
 
 		Class<?>[] parameterTypes;
 		Class<?> returnType;
-		if (method instanceof Method) {
+		if (runtime == RUNTIME_ART && (method instanceof Method || method instanceof Constructor)) {
+			parameterTypes = null;
+			returnType = null;
+		} else if (method instanceof Method) {
 			parameterTypes = ((Method) method).getParameterTypes();
 			returnType = ((Method) method).getReturnType();
 		} else if (method instanceof Constructor) {
