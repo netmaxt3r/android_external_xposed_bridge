@@ -1,12 +1,13 @@
 package de.robv.android.xposed.services;
 
-import java.io.IOException;
-
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 
+import java.io.IOException;
+
+/** @hide */
 public final class BinderService extends BaseService {
 	public static final int TARGET_APP = 0;
 	public static final int TARGET_SYSTEM = 1;
@@ -140,7 +141,7 @@ public final class BinderService extends BaseService {
 				}
 			default:
 				throwCommonIOException(errno, errorMsg, filename, " while reading ");
-				return null; // not reached
+				throw new IllegalStateException(); // not reached
 		}
 	}
 

@@ -2,23 +2,27 @@ package de.robv.android.xposed;
 
 
 /**
- * Hook the initialization of Java-based command-line tools (like pm)
+ * Hook the initialization of Java-based command-line tools (like pm).
  *
- * <p>Starting with Xposed's app_process version 55, this will not be called unless a
- * special file (conf/enable_for_tools) is created in the data directory of the installer.
- * You should not (and usually don't need to) implement this in your module.
+ * @hide Xposed no longer hooks command-line tools, therefore this interface shouldn't be
+ * implemented anymore.
  */
-@Deprecated
 public interface IXposedHookCmdInit extends IXposedMod {
 	/**
-	 * Called very early during startup of a command-line tool
-	 * @param startClassName The startup class
-	 * @throws Throwable everything is caught, but will prevent further initialization of the module
+	 * Called very early during startup of a command-line tool.
+	 * @param startupParam Details about the module itself and the started process.
+	 * @throws Throwable Everything is caught, but it will prevent further initialization of the module.
 	 */
-	public void initCmdApp(StartupParam startupParam) throws Throwable;
+	void initCmdApp(StartupParam startupParam) throws Throwable;
 
-	public static class StartupParam {
+	/** Data holder for {@link #initCmdApp}. */
+	final class StartupParam {
+		/*package*/ StartupParam() {}
+
+		/** The path to the module's APK. */
 		public String modulePath;
+
+		/** The class name of the tools that the hook was invoked for. */
 		public String startClassName;
 	}
 }

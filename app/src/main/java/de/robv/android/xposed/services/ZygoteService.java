@@ -3,6 +3,8 @@ package de.robv.android.xposed.services;
 import java.io.IOException;
 import java.util.Arrays;
 
+/** @hide */
+@SuppressWarnings("JniMissingFunction")
 public final class ZygoteService extends BaseService {
 	@Override
 	public native boolean checkFileAccess(String filename, int mode);

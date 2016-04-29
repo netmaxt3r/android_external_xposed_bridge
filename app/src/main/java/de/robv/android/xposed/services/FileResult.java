@@ -36,9 +36,10 @@ public final class FileResult {
 		this.mtime = mtime;
 	}
 
+	/** @hide */
 	@Override
 	public String toString() {
-		StringBuffer sb = new StringBuffer("{");
+		StringBuilder sb = new StringBuilder("{");
 		if (content != null) {
 			sb.append("content.length: ");
 			sb.append(content.length);

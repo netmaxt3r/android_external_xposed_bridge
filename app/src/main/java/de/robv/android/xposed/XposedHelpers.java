@@ -1,5 +1,8 @@
 package de.robv.android.xposed;
 
+import android.content.res.AssetManager;
+import android.content.res.Resources;
+
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -18,12 +21,15 @@ import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import android.content.res.Resources;
 import external.org.apache.commons.lang3.ClassUtils;
 import external.org.apache.commons.lang3.reflect.MemberUtils;
-import external.org.apache.commons.lang3.reflect.MethodUtils;
 
-public class XposedHelpers {
+/**
+ * Helpers that simplify hooking and calling methods/constructors, getting and settings fields, ...
+ */
+public final class XposedHelpers {
+	private XposedHelpers() {}
+
 	private static final HashMap<String, Field> fieldCache = new HashMap<String, Field>();
 	private static final HashMap<String, Method> methodCache = new HashMap<String, Method>();
 	private static final HashMap<String, Constructor<?>> constructorCache = new HashMap<String, Constructor<?>>();
@@ -31,19 +37,21 @@ public class XposedHelpers {
 	private static final HashMap<String, ThreadLocal<AtomicInteger>> sMethodDepth = new HashMap<String, ThreadLocal<AtomicInteger>>();
 
 	/**
-	 * Look up a class with the specified class loader (or the boot class loader if
-	 * <code>classLoader</code> is <code>null</code>).
-	 * <p>Class names can be specified in different formats:
-	 * <ul><li>java.lang.Integer
-	 * <li>int
-	 * <li>int[]
-	 * <li>[I
-	 * <li>java.lang.String[]
-	 * <li>[Ljava.lang.String;
-	 * <li>android.app.ActivityThread.ResourcesKey
-	 * <li>android.app.ActivityThread$ResourcesKey
-	 * <li>android.app.ActivityThread$ResourcesKey[]</ul>
-	 * <p>A {@link ClassNotFoundError} is thrown in case the class was not found.
+	 * Look up a class with the specified class loader.
+	 *
+	 * <p>There are various allowed syntaxes for the class name, but it's recommended to use one of
+	 * these:
+	 * <ul>
+	 *   <li>{@code java.lang.String}
+	 *   <li>{@code java.lang.String[]} (array)
+	 *   <li>{@code android.app.ActivityThread.ResourcesKey}
+	 *   <li>{@code android.app.ActivityThread$ResourcesKey}
+	 * </ul>
+	 *
+	 * @param className The class name in one of the formats mentioned above.
+	 * @param classLoader The class loader, or {@code null} for the boot class loader.
+	 * @return A reference to the class.
+	 * @throws ClassNotFoundError In case the class was not found.
 	 */
 	public static Class<?> findClass(String className, ClassLoader classLoader) {
 		if (classLoader == null)
@@ -56,14 +64,31 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Look up a field in a class and set it to accessible. The result is cached.
-	 * If the field was not found, a {@link NoSuchFieldError} will be thrown.
+	 * Look up and return a class if it exists.
+	 * Like {@link #findClass}, but doesn't throw an exception if the class doesn't exist.
+	 *
+	 * @param className The class name.
+	 * @param classLoader The class loader, or {@code null} for the boot class loader.
+	 * @return A reference to the class, or {@code null} if it doesn't exist.
+	 */
+	public static Class<?> findClassIfExists(String className, ClassLoader classLoader) {
+		try {
+			return findClass(className, classLoader);
+		} catch (ClassNotFoundError e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Look up a field in a class and set it to accessible.
+	 *
+	 * @param clazz The class which either declares or inherits the field.
+	 * @param fieldName The field name.
+	 * @return A reference to the field.
+	 * @throws NoSuchFieldError In case the field was not found.
 	 */
 	public static Field findField(Class<?> clazz, String fieldName) {
-		StringBuilder sb = new StringBuilder(clazz.getName());
-		sb.append('#');
-		sb.append(fieldName);
-		String fullFieldName = sb.toString();
+		String fullFieldName = clazz.getName() + '#' + fieldName;
 
 		if (fieldCache.containsKey(fullFieldName)) {
 			Field field = fieldCache.get(fullFieldName);
@@ -80,6 +105,22 @@ public class XposedHelpers {
 		} catch (NoSuchFieldException e) {
 			fieldCache.put(fullFieldName, null);
 			throw new NoSuchFieldError(fullFieldName);
+		}
+	}
+
+	/**
+	 * Look up and return a field if it exists.
+	 * Like {@link #findField}, but doesn't throw an exception if the field doesn't exist.
+	 *
+	 * @param clazz The class which either declares or inherits the field.
+	 * @param fieldName The field name.
+	 * @return A reference to the field, or {@code null} if it doesn't exist.
+	 */
+	public static Field findFieldIfExists(Class<?> clazz, String fieldName) {
+		try {
+			return findField(clazz, fieldName);
+		} catch (NoSuchFieldError e) {
+			return null;
 		}
 	}
 
@@ -103,7 +144,11 @@ public class XposedHelpers {
 	/**
 	 * Returns the first field of the given type in a class.
 	 * Might be useful for Proguard'ed classes to identify fields with unique types.
-	 * If no matching field was not found, a {@link NoSuchFieldError} will be thrown.
+	 *
+	 * @param clazz The class which either declares or inherits the field.
+	 * @param type The type of the field.
+	 * @return A reference to the first field of the given type.
+	 * @throws NoSuchFieldError In case no matching field was not found.
 	 */
 	public static Field findFirstFieldByExactType(Class<?> clazz, Class<?> type) {
 		Class<?> clz = clazz;
@@ -120,8 +165,8 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Look up a method and place a hook on it. The last argument must be the callback for the hook.
-	 * @see #findMethodExact(Class, String, Object...)
+	 * Look up a method and hook it. See {@link #findAndHookMethod(String, ClassLoader, String, Object...)}
+	 * for details.
 	 */
 	public static XC_MethodHook.Unhook findAndHookMethod(Class<?> clazz, String methodName, Object... parameterTypesAndCallback) {
 		if (parameterTypesAndCallback.length == 0 || !(parameterTypesAndCallback[parameterTypesAndCallback.length-1] instanceof XC_MethodHook))
@@ -133,36 +178,149 @@ public class XposedHelpers {
 		return XposedBridge.hookMethod(m, callback);
 	}
 
-	/** @see #findAndHookMethod(Class, String, Object...) */
+	/**
+	 * Look up a method and hook it. The last argument must be the callback for the hook.
+	 *
+	 * <p>This combines calls to {@link #findMethodExact(Class, String, Object...)} and
+	 * {@link XposedBridge#hookMethod}.
+	 *
+	 * <p class="warning">The method must be declared or overridden in the given class, inherited
+	 * methods are not considered! That's because each method implementation exists only once in
+	 * the memory, and when classes inherit it, they just get another reference to the implementation.
+	 * Hooking a method therefore applies to all classes inheriting the same implementation. You
+	 * have to expect that the hook applies to subclasses (unless they override the method), but you
+	 * shouldn't have to worry about hooks applying to superclasses, hence this "limitation".
+	 * There could be undesired or even dangerous hooks otherwise, e.g. if you hook
+	 * {@code SomeClass.equals()} and that class doesn't override the {@code equals()} on some ROMs,
+	 * making you hook {@code Object.equals()} instead.
+	 *
+	 * <p>There are two ways to specify the parameter types. If you already have a reference to the
+	 * {@link Class}, use that. For Android framework classes, you can often use something like
+	 * {@code String.class}. If you don't have the class reference, you can simply use the
+	 * full class name as a string, e.g. {@code java.lang.String} or {@code com.example.MyClass}.
+	 * It will be passed to {@link #findClass} with the same class loader that is used for the target
+	 * method, see its documentation for the allowed notations.
+	 *
+	 * <p>Primitive types, such as {@code int}, can be specified using {@code int.class} (recommended)
+	 * or {@code Integer.TYPE}. Note that {@code Integer.class} doesn't refer to {@code int} but to
+	 * {@code Integer}, which is a normal class (boxed primitive). Therefore it must not be used when
+	 * the method expects an {@code int} parameter - it has to be used for {@code Integer} parameters
+	 * though, so check the method signature in detail.
+	 *
+	 * <p>As last argument to this method (after the list of target method parameters), you need
+	 * to specify the callback that should be executed when the method is invoked. It's usually
+	 * an anonymous subclass of {@link XC_MethodHook} or {@link XC_MethodReplacement}.
+	 *
+	 * <p><b>Example</b>
+	 * <pre class="prettyprint">
+	 * // In order to hook this method ...
+	 * package com.example;
+	 * public class SomeClass {
+	 *   public int doSomething(String s, int i, MyClass m) {
+	 *     ...
+	 *   }
+	 * }
+	 *
+	 * // ... you can use this call:
+	 * findAndHookMethod("com.example.SomeClass", lpparam.classLoader, String.class, int.class, "com.example.MyClass", new XC_MethodHook() {
+	 *   &#64;Override
+	 *   protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+	 *     String oldText = (String) param.args[0];
+	 *     Log.d("MyModule", oldText);
+	 *
+	 *     param.args[0] = "test";
+	 *     param.args[1] = 42; // auto-boxing is working here
+	 *     setBooleanField(param.args[2], "great", true);
+	 *
+	 *     // This would not work (as MyClass can't be resolved at compile time):
+	 *     //   MyClass myClass = (MyClass) param.args[2];
+	 *     //   myClass.great = true;
+	 *   }
+	 * });
+	 * </pre>
+	 *
+	 * @param className The name of the class which implements the method.
+	 * @param classLoader The class loader for resolving the target and parameter classes.
+	 * @param methodName The target method name.
+	 * @param parameterTypesAndCallback The parameter types of the target method, plus the callback.
+	 * @throws NoSuchMethodError In case the method was not found.
+	 * @throws ClassNotFoundError In case the target class or one of the parameter types couldn't be resolved.
+	 * @return An object which can be used to remove the callback again.
+	 */
 	public static XC_MethodHook.Unhook findAndHookMethod(String className, ClassLoader classLoader, String methodName, Object... parameterTypesAndCallback) {
 		return findAndHookMethod(findClass(className, classLoader), methodName, parameterTypesAndCallback);
 	}
 
 	/**
-	 * Look up a method in a class and set it to accessible. The result is cached.
-	 * If the method was not found, a {@link NoSuchMethodError} will be thrown.
-	 *
-	 * <p>The parameter types may either be specified as <code>Class</code> or <code>String</code>
-	 * objects. In the latter case, the class is looked up using {@link #findClass} with the same
-	 * class loader as the method's class.
+	 * Look up a method in a class and set it to accessible.
+	 * See {@link #findMethodExact(String, ClassLoader, String, Object...)} for details.
 	 */
 	public static Method findMethodExact(Class<?> clazz, String methodName, Object... parameterTypes) {
 		return findMethodExact(clazz, methodName, getParameterClasses(clazz.getClassLoader(), parameterTypes));
 	}
 
-	/** @see #findMethodExact(Class, String, Object...) */
+	/**
+	 * Look up and return a method if it exists.
+	 * See {@link #findMethodExactIfExists(String, ClassLoader, String, Object...)} for details.
+	 */
+	public static Method findMethodExactIfExists(Class<?> clazz, String methodName, Object... parameterTypes) {
+		try {
+			return findMethodExact(clazz, methodName, parameterTypes);
+		} catch (NoSuchMethodError e) {
+			return null;
+		} catch (ClassNotFoundError e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Look up a method in a class and set it to accessible.
+	 * The method must be declared or overridden in the given class.
+	 *
+	 * <p>See {@link #findAndHookMethod(String, ClassLoader, String, Object...)} for details about
+	 * the method and parameter type resolution.
+	 *
+	 * @param className The name of the class which implements the method.
+	 * @param classLoader The class loader for resolving the target and parameter classes.
+	 * @param methodName The target method name.
+	 * @param parameterTypes The parameter types of the target method.
+	 * @throws NoSuchMethodError In case the method was not found.
+	 * @throws ClassNotFoundError In case the target class or one of the parameter types couldn't be resolved.
+	 * @return A reference to the method.
+	 */
 	public static Method findMethodExact(String className, ClassLoader classLoader, String methodName, Object... parameterTypes) {
 		return findMethodExact(findClass(className, classLoader), methodName, getParameterClasses(classLoader, parameterTypes));
 	}
 
-	/** @see #findMethodExact(Class, String, Object...) */
+	/**
+	 * Look up and return a method if it exists.
+	 * Like {@link #findMethodExact(String, ClassLoader, String, Object...)}, but doesn't throw an
+	 * exception if the method doesn't exist.
+	 *
+	 * @param className The name of the class which implements the method.
+	 * @param classLoader The class loader for resolving the target and parameter classes.
+	 * @param methodName The target method name.
+	 * @param parameterTypes The parameter types of the target method.
+	 * @return A reference to the method, or {@code null} if it doesn't exist.
+	 */
+	public static Method findMethodExactIfExists(String className, ClassLoader classLoader, String methodName, Object... parameterTypes) {
+		try {
+			return findMethodExact(className, classLoader, methodName, parameterTypes);
+		} catch (NoSuchMethodError e) {
+			return null;
+		} catch (ClassNotFoundError e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Look up a method in a class and set it to accessible.
+	 * See {@link #findMethodExact(String, ClassLoader, String, Object...)} for details.
+	 *
+	 * <p>This variant requires that you already have reference to all the parameter types.
+	 */
 	public static Method findMethodExact(Class<?> clazz, String methodName, Class<?>... parameterTypes) {
-		StringBuilder sb = new StringBuilder(clazz.getName());
-		sb.append('#');
-		sb.append(methodName);
-		sb.append(getParametersString(parameterTypes));
-		sb.append("#exact");
-		String fullMethodName = sb.toString();
+		String fullMethodName = clazz.getName() + '#' + methodName + getParametersString(parameterTypes) + "#exact";
 
 		if (methodCache.containsKey(fullMethodName)) {
 			Method method = methodCache.get(fullMethodName);
@@ -183,10 +341,15 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Returns an array of all methods in a class with the specified parameter types.
+	 * Returns an array of all methods declared/overridden in a class with the specified parameter types.
 	 *
-	 * The return type is optional, it will not be compared if it is {@code null}.
+	 * <p>The return type is optional, it will not be compared if it is {@code null}.
 	 * Use {@code void.class} if you want to search for methods returning nothing.
+	 *
+	 * @param clazz The class to look in.
+	 * @param returnType The return type, or {@code null} (see above).
+	 * @param parameterTypes The parameter types.
+	 * @return An array with matching methods, all set to accessible already.
 	 */
 	public static Method[] findMethodsByExactParameters(Class<?> clazz, Class<?> returnType, Class<?>... parameterTypes) {
 		List<Method> result = new LinkedList<Method>();
@@ -216,18 +379,20 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Look up a method in a class and set it to accessible. The result is cached.
-	 * This does not only look for exact matches, but for the closest match.
-	 * If the method was not found, a {@link NoSuchMethodError} will be thrown.
-	 * @see MethodUtils#getMatchingAccessibleMethod
+	 * Look up a method in a class and set it to accessible.
+	 *
+	 * <p>This does'nt only look for exact matches, but for the best match. All considered candidates
+	 * must be compatible with the given parameter types, i.e. the parameters must be assignable
+	 * to the method's formal parameters. Inherited methods are considered here.
+	 *
+	 * @param clazz The class which declares, inherits or overrides the method.
+	 * @param methodName The method name.
+	 * @param parameterTypes The types of the method's parameters.
+	 * @return A reference to the best-matching method.
+	 * @throws NoSuchMethodError In case no suitable method was found.
 	 */
 	public static Method findMethodBestMatch(Class<?> clazz, String methodName, Class<?>... parameterTypes) {
-		StringBuilder sb = new StringBuilder(clazz.getName());
-		sb.append('#');
-		sb.append(methodName);
-		sb.append(getParametersString(parameterTypes));
-		sb.append("#bestmatch");
-		String fullMethodName = sb.toString();
+		String fullMethodName = clazz.getName() + '#' + methodName + getParametersString(parameterTypes) + "#bestmatch";
 
 		if (methodCache.containsKey(fullMethodName)) {
 			Method method = methodCache.get(fullMethodName);
@@ -277,22 +442,21 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Look up a method in a class and set it to accessible. Parameter types are
-	 * determined from the <code>args</code> for the method call. The result is cached.
-	 * This does not only look for exact matches, but for the closest match.
-	 * If the method was not found, a {@link NoSuchMethodError} will be thrown.
+	 * Look up a method in a class and set it to accessible.
+	 *
+	 * <p>See {@link #findMethodBestMatch(Class, String, Class...)} for details. This variant
+	 * determines the parameter types from the classes of the given objects.
 	 */
 	public static Method findMethodBestMatch(Class<?> clazz, String methodName, Object... args) {
 		return findMethodBestMatch(clazz, methodName, getParameterTypes(args));
 	}
 
 	/**
-	 * Look up a method in a class and set it to accessible. Parameter types are
-	 * preferably taken from the <code>parameterTypes</code>. Any item in this array that
-	 * is <code>null</code> is determined from the corresponding item in <code>args</code>.
-	 * The result is cached.
-	 * This does not only look for exact matches, but for the closest match.
-	 * If the method was not found, a {@link NoSuchMethodError} will be thrown.
+	 * Look up a method in a class and set it to accessible.
+	 *
+	 * <p>See {@link #findMethodBestMatch(Class, String, Class...)} for details. This variant
+	 * determines the parameter types from the classes of the given objects. For any item that is
+	 * {@code null}, the type is taken from {@code parameterTypes} instead.
 	 */
 	public static Method findMethodBestMatch(Class<?> clazz, String methodName, Class<?>[] parameterTypes, Object[] args) {
 		Class<?>[] argsClasses = null;
@@ -307,7 +471,7 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Return an array with the classes of the given objects
+	 * Returns an array with the classes of the given objects.
 	 */
 	public static Class<?>[] getParameterTypes(Object... args) {
 		Class<?>[] clazzes = new Class<?>[args.length];
@@ -351,7 +515,7 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Return an array with the classes of the given objects
+	 * Returns an array of the given classes.
 	 */
 	public static Class<?>[] getClassesAsArray(Class<?>... clazzes) {
 		return clazzes;
@@ -375,20 +539,56 @@ public class XposedHelpers {
 		return sb.toString();
 	}
 
-
+	/**
+	 * Look up a constructor of a class and set it to accessible.
+	 * See {@link #findMethodExact(String, ClassLoader, String, Object...)} for details.
+	 */
 	public static Constructor<?> findConstructorExact(Class<?> clazz, Object... parameterTypes) {
 		return findConstructorExact(clazz, getParameterClasses(clazz.getClassLoader(), parameterTypes));
 	}
 
+	/**
+	 * Look up and return a constructor if it exists.
+	 * See {@link #findMethodExactIfExists(String, ClassLoader, String, Object...)} for details.
+	 */
+	public static Constructor<?> findConstructorExactIfExists(Class<?> clazz, Object... parameterTypes) {
+		try {
+			return findConstructorExact(clazz, parameterTypes);
+		} catch (NoSuchMethodError e) {
+			return null;
+		} catch (ClassNotFoundError e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Look up a constructor of a class and set it to accessible.
+	 * See {@link #findMethodExact(String, ClassLoader, String, Object...)} for details.
+	 */
 	public static Constructor<?> findConstructorExact(String className, ClassLoader classLoader, Object... parameterTypes) {
 		return findConstructorExact(findClass(className, classLoader), getParameterClasses(classLoader, parameterTypes));
 	}
 
+	/**
+	 * Look up and return a constructor if it exists.
+	 * See {@link #findMethodExactIfExists(String, ClassLoader, String, Object...)} for details.
+	 */
+	public static Constructor<?> findConstructorExactIfExists(String className, ClassLoader classLoader, Object... parameterTypes) {
+		try {
+			return findConstructorExact(className, classLoader, parameterTypes);
+		} catch (NoSuchMethodError e) {
+			return null;
+		} catch (ClassNotFoundError e) {
+			return null;
+		}
+	}
+
+	/**
+	 * Look up a constructor of a class and set it to accessible.
+	 * See {@link #findMethodExact(String, ClassLoader, String, Object...)} for details.
+	 */
 	public static Constructor<?> findConstructorExact(Class<?> clazz, Class<?>... parameterTypes) {
-		StringBuilder sb = new StringBuilder(clazz.getName());
-		sb.append(getParametersString(parameterTypes));
-		sb.append("#exact");
-		String fullConstructorName = sb.toString();
+		String fullConstructorName = clazz.getName() + getParametersString(parameterTypes) + "#exact";
 
 		if (constructorCache.containsKey(fullConstructorName)) {
 			Constructor<?> constructor = constructorCache.get(fullConstructorName);
@@ -409,8 +609,8 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Look up a constructor and place a hook on it. The last argument must be the callback for the hook.
-	 * @see #findConstructorExact(Class, Object...)
+	 * Look up a constructor and hook it. See {@link #findAndHookMethod(String, ClassLoader, String, Object...)}
+	 * for details.
 	 */
 	public static XC_MethodHook.Unhook findAndHookConstructor(Class<?> clazz, Object... parameterTypesAndCallback) {
 		if (parameterTypesAndCallback.length == 0 || !(parameterTypesAndCallback[parameterTypesAndCallback.length-1] instanceof XC_MethodHook))
@@ -422,16 +622,21 @@ public class XposedHelpers {
 		return XposedBridge.hookMethod(m, callback);
 	}
 
-	/** @see #findAndHookConstructor(Class, Object...) */
+	/**
+	 * Look up a constructor and hook it. See {@link #findAndHookMethod(String, ClassLoader, String, Object...)}
+	 * for details.
+	 */
 	public static XC_MethodHook.Unhook findAndHookConstructor(String className, ClassLoader classLoader, Object... parameterTypesAndCallback) {
 		return findAndHookConstructor(findClass(className, classLoader), parameterTypesAndCallback);
 	}
 
+	/**
+	 * Look up a constructor in a class and set it to accessible.
+	 *
+	 * <p>See {@link #findMethodBestMatch(Class, String, Class...)} for details.
+	 */
 	public static Constructor<?> findConstructorBestMatch(Class<?> clazz, Class<?>... parameterTypes) {
-		StringBuilder sb = new StringBuilder(clazz.getName());
-		sb.append(getParametersString(parameterTypes));
-		sb.append("#bestmatch");
-		String fullConstructorName = sb.toString();
+		String fullConstructorName = clazz.getName() + getParametersString(parameterTypes) + "#bestmatch";
 
 		if (constructorCache.containsKey(fullConstructorName)) {
 			Constructor<?> constructor = constructorCache.get(fullConstructorName);
@@ -472,10 +677,23 @@ public class XposedHelpers {
 		}
 	}
 
+	/**
+	 * Look up a constructor in a class and set it to accessible.
+	 *
+	 * <p>See {@link #findMethodBestMatch(Class, String, Class...)} for details. This variant
+	 * determines the parameter types from the classes of the given objects.
+	 */
 	public static Constructor<?> findConstructorBestMatch(Class<?> clazz, Object... args) {
 		return findConstructorBestMatch(clazz, getParameterTypes(args));
 	}
 
+	/**
+	 * Look up a constructor in a class and set it to accessible.
+	 *
+	 * <p>See {@link #findMethodBestMatch(Class, String, Class...)} for details. This variant
+	 * determines the parameter types from the classes of the given objects. For any item that is
+	 * {@code null}, the type is taken from {@code parameterTypes} instead.
+	 */
 	public static Constructor<?> findConstructorBestMatch(Class<?> clazz, Class<?>[] parameterTypes, Object[] args) {
 		Class<?>[] argsClasses = null;
 		for (int i = 0; i < parameterTypes.length; i++) {
@@ -488,17 +706,27 @@ public class XposedHelpers {
 		return findConstructorBestMatch(clazz, parameterTypes);
 	}
 
-	public static class ClassNotFoundError extends Error {
+	/**
+	 * Thrown when a class loader is unable to find a class. Unlike {@link ClassNotFoundException},
+	 * callers are not forced to explicitly catch this. If uncaught, the error will be passed to the
+	 * next caller in the stack.
+	 */
+	public static final class ClassNotFoundError extends Error {
 		private static final long serialVersionUID = -1070936889459514628L;
+
+		/** @hide */
 		public ClassNotFoundError(Throwable cause) {
 			super(cause);
 		}
+
+		/** @hide */
 		public ClassNotFoundError(String detailMessage, Throwable cause) {
 			super(detailMessage, cause);
 		}
 	}
 
 	//#################################################################################################
+	/** Sets the value of an object field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setObjectField(Object obj, String fieldName, Object value) {
 		try {
 			findField(obj.getClass(), fieldName).set(obj, value);
@@ -511,6 +739,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a {@code boolean} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setBooleanField(Object obj, String fieldName, boolean value) {
 		try {
 			findField(obj.getClass(), fieldName).setBoolean(obj, value);
@@ -523,6 +752,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a {@code byte} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setByteField(Object obj, String fieldName, byte value) {
 		try {
 			findField(obj.getClass(), fieldName).setByte(obj, value);
@@ -535,6 +765,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a {@code char} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setCharField(Object obj, String fieldName, char value) {
 		try {
 			findField(obj.getClass(), fieldName).setChar(obj, value);
@@ -547,6 +778,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a {@code double} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setDoubleField(Object obj, String fieldName, double value) {
 		try {
 			findField(obj.getClass(), fieldName).setDouble(obj, value);
@@ -559,6 +791,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a {@code float} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setFloatField(Object obj, String fieldName, float value) {
 		try {
 			findField(obj.getClass(), fieldName).setFloat(obj, value);
@@ -571,6 +804,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of an {@code int} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setIntField(Object obj, String fieldName, int value) {
 		try {
 			findField(obj.getClass(), fieldName).setInt(obj, value);
@@ -583,6 +817,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a {@code long} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setLongField(Object obj, String fieldName, long value) {
 		try {
 			findField(obj.getClass(), fieldName).setLong(obj, value);
@@ -595,6 +830,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a {@code short} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static void setShortField(Object obj, String fieldName, short value) {
 		try {
 			findField(obj.getClass(), fieldName).setShort(obj, value);
@@ -608,6 +844,7 @@ public class XposedHelpers {
 	}
 
 	//#################################################################################################
+	/** Returns the value of an object field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static Object getObjectField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).get(obj);
@@ -620,11 +857,13 @@ public class XposedHelpers {
 		}
 	}
 
-	/** For inner classes, return the "this" reference of the surrounding class */
+	/** For inner classes, returns the surrounding instance, i.e. the {@code this} reference of the surrounding class. */
 	public static Object getSurroundingThis(Object obj) {
 		return getObjectField(obj, "this$0");
 	}
 
+	/** Returns the value of a {@code boolean} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
+	@SuppressWarnings("BooleanMethodIsAlwaysInverted")
 	public static boolean getBooleanField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getBoolean(obj);
@@ -637,6 +876,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of a {@code byte} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static byte getByteField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getByte(obj);
@@ -649,6 +889,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of a {@code char} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static char getCharField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getChar(obj);
@@ -661,6 +902,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of a {@code double} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static double getDoubleField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getDouble(obj);
@@ -673,6 +915,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of a {@code float} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static float getFloatField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getFloat(obj);
@@ -685,6 +928,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of an {@code int} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static int getIntField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getInt(obj);
@@ -697,6 +941,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of a {@code long} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static long getLongField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getLong(obj);
@@ -709,6 +954,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of a {@code short} field in the given object instance. A class reference is not sufficient! See also {@link #findField}. */
 	public static short getShortField(Object obj, String fieldName) {
 		try {
 			return findField(obj.getClass(), fieldName).getShort(obj);
@@ -722,6 +968,7 @@ public class XposedHelpers {
 	}
 
 	//#################################################################################################
+	/** Sets the value of a static object field in the given class. See also {@link #findField}. */
 	public static void setStaticObjectField(Class<?> clazz, String fieldName, Object value) {
 		try {
 			findField(clazz, fieldName).set(null, value);
@@ -734,6 +981,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code boolean} field in the given class. See also {@link #findField}. */
 	public static void setStaticBooleanField(Class<?> clazz, String fieldName, boolean value) {
 		try {
 			findField(clazz, fieldName).setBoolean(null, value);
@@ -746,6 +994,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code byte} field in the given class. See also {@link #findField}. */
 	public static void setStaticByteField(Class<?> clazz, String fieldName, byte value) {
 		try {
 			findField(clazz, fieldName).setByte(null, value);
@@ -758,6 +1007,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code char} field in the given class. See also {@link #findField}. */
 	public static void setStaticCharField(Class<?> clazz, String fieldName, char value) {
 		try {
 			findField(clazz, fieldName).setChar(null, value);
@@ -770,6 +1020,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code double} field in the given class. See also {@link #findField}. */
 	public static void setStaticDoubleField(Class<?> clazz, String fieldName, double value) {
 		try {
 			findField(clazz, fieldName).setDouble(null, value);
@@ -782,6 +1033,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code float} field in the given class. See also {@link #findField}. */
 	public static void setStaticFloatField(Class<?> clazz, String fieldName, float value) {
 		try {
 			findField(clazz, fieldName).setFloat(null, value);
@@ -794,6 +1046,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code int} field in the given class. See also {@link #findField}. */
 	public static void setStaticIntField(Class<?> clazz, String fieldName, int value) {
 		try {
 			findField(clazz, fieldName).setInt(null, value);
@@ -806,6 +1059,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code long} field in the given class. See also {@link #findField}. */
 	public static void setStaticLongField(Class<?> clazz, String fieldName, long value) {
 		try {
 			findField(clazz, fieldName).setLong(null, value);
@@ -818,6 +1072,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code short} field in the given class. See also {@link #findField}. */
 	public static void setStaticShortField(Class<?> clazz, String fieldName, short value) {
 		try {
 			findField(clazz, fieldName).setShort(null, value);
@@ -831,6 +1086,7 @@ public class XposedHelpers {
 	}
 
 	//#################################################################################################
+	/** Returns the value of a static object field in the given class. See also {@link #findField}. */
 	public static Object getStaticObjectField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).get(null);
@@ -843,6 +1099,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Returns the value of a static {@code boolean} field in the given class. See also {@link #findField}. */
 	public static boolean getStaticBooleanField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getBoolean(null);
@@ -855,6 +1112,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code byte} field in the given class. See also {@link #findField}. */
 	public static byte getStaticByteField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getByte(null);
@@ -867,6 +1125,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code char} field in the given class. See also {@link #findField}. */
 	public static char getStaticCharField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getChar(null);
@@ -879,6 +1138,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code double} field in the given class. See also {@link #findField}. */
 	public static double getStaticDoubleField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getDouble(null);
@@ -891,6 +1151,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code float} field in the given class. See also {@link #findField}. */
 	public static float getStaticFloatField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getFloat(null);
@@ -903,6 +1164,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code int} field in the given class. See also {@link #findField}. */
 	public static int getStaticIntField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getInt(null);
@@ -915,6 +1177,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code long} field in the given class. See also {@link #findField}. */
 	public static long getStaticLongField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getLong(null);
@@ -927,6 +1190,7 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Sets the value of a static {@code short} field in the given class. See also {@link #findField}. */
 	public static short getStaticShortField(Class<?> clazz, String fieldName) {
 		try {
 			return findField(clazz, fieldName).getShort(null);
@@ -941,8 +1205,14 @@ public class XposedHelpers {
 
 	//#################################################################################################
 	/**
-	 * Call instance or static method <code>methodName</code> for object <code>obj</code> with the arguments
-	 * <code>args</code>. The types for the arguments will be determined automaticall from <code>args</code>
+	 * Calls an instance or static method of the given object.
+	 * The method is resolved using {@link #findMethodBestMatch(Class, String, Object...)}.
+	 *
+	 * @param obj The object instance. A class reference is not sufficient!
+	 * @param methodName The method name.
+	 * @param args The arguments for the method call.
+	 * @throws NoSuchMethodError In case no suitable method was found.
+	 * @throws InvocationTargetError In case an exception was thrown by the invoked method.
 	 */
 	public static Object callMethod(Object obj, String methodName, Object... args) {
 		try {
@@ -959,10 +1229,11 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Call instance or static method <code>methodName</code> for object <code>obj</code> with the arguments
-	 * <code>args</code>. The types for the arguments will be taken from <code>parameterTypes</code>.
-	 * This array can have items that are <code>null</code>. In this case, the type for this parameter
-	 * is determined from <code>args</code>.
+	 * Calls an instance or static method of the given object.
+	 * See {@link #callMethod(Object, String, Class[], Object...)}.
+	 *
+	 * <p>This variant allows you to specify parameter types, which can help in case there are multiple
+	 * methods with the same name, especially if you call it with {@code null} parameters.
 	 */
 	public static Object callMethod(Object obj, String methodName, Class<?>[] parameterTypes, Object... args) {
 		try {
@@ -979,8 +1250,14 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Call static method <code>methodName</code> for class <code>clazz</code> with the arguments
-	 * <code>args</code>. The types for the arguments will be determined automaticall from <code>args</code>
+	 * Calls a static method of the given class.
+	 * The method is resolved using {@link #findMethodBestMatch(Class, String, Object...)}.
+	 *
+	 * @param clazz The class reference.
+	 * @param methodName The method name.
+	 * @param args The arguments for the method call.
+	 * @throws NoSuchMethodError In case no suitable method was found.
+	 * @throws InvocationTargetError In case an exception was thrown by the invoked method.
 	 */
 	public static Object callStaticMethod(Class<?> clazz, String methodName, Object... args) {
 		try {
@@ -997,10 +1274,11 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Call static method <code>methodName</code> for class <code>clazz</code> with the arguments
-	 * <code>args</code>. The types for the arguments will be taken from <code>parameterTypes</code>.
-	 * This array can have items that are <code>null</code>. In this case, the type for this parameter
-	 * is determined from <code>args</code>.
+	 * Calls a static method of the given class.
+	 * See {@link #callStaticMethod(Class, String, Object...)}.
+	 *
+	 * <p>This variant allows you to specify parameter types, which can help in case there are multiple
+	 * methods with the same name, especially if you call it with {@code null} parameters.
 	 */
 	public static Object callStaticMethod(Class<?> clazz, String methodName, Class<?>[] parameterTypes, Object... args) {
 		try {
@@ -1016,17 +1294,33 @@ public class XposedHelpers {
 		}
 	}
 
-	public static class InvocationTargetError extends Error {
+	/**
+	 * This class provides a wrapper for an exception thrown by a method invocation.
+	 *
+	 * @see #callMethod(Object, String, Object...)
+	 * @see #callStaticMethod(Class, String, Object...)
+	 * @see #newInstance(Class, Object...)
+	 */
+	public static final class InvocationTargetError extends Error {
 		private static final long serialVersionUID = -1070936889459514628L;
+
+		/** @hide */
 		public InvocationTargetError(Throwable cause) {
 			super(cause);
-		}
-		public InvocationTargetError(String detailMessage, Throwable cause) {
-			super(detailMessage, cause);
 		}
 	}
 
 	//#################################################################################################
+	/**
+	 * Creates a new instance of the given class.
+	 * The constructor is resolved using {@link #findConstructorBestMatch(Class, Object...)}.
+	 *
+	 * @param clazz The class reference.
+	 * @param args The arguments for the constructor call.
+	 * @throws NoSuchMethodError In case no suitable constructor was found.
+	 * @throws InvocationTargetError In case an exception was thrown by the invoked method.
+	 * @throws InstantiationError In case the class cannot be instantiated.
+	 */
 	public static Object newInstance(Class<?> clazz, Object... args) {
 		try {
 			return findConstructorBestMatch(clazz, args).newInstance(args);
@@ -1043,6 +1337,13 @@ public class XposedHelpers {
 		}
 	}
 
+	/**
+	 * Creates a new instance of the given class.
+	 * See {@link #newInstance(Class, Object...)}.
+	 *
+	 * <p>This variant allows you to specify parameter types, which can help in case there are multiple
+	 * constructors with the same name, especially if you call it with {@code null} parameters.
+	 */
 	public static Object newInstance(Class<?> clazz, Class<?>[] parameterTypes, Object... args) {
 		try {
 			return findConstructorBestMatch(clazz, parameterTypes, args).newInstance(args);
@@ -1060,6 +1361,16 @@ public class XposedHelpers {
 	}
 
 	//#################################################################################################
+
+	/**
+	 * Attaches any value to an object instance. This simulates adding an instance field.
+	 * The value can be retrieved again with {@link #getAdditionalInstanceField}.
+	 *
+	 * @param obj The object instance for which the value should be stored.
+	 * @param key The key in the value map for this object instance.
+	 * @param value The value to store.
+	 * @return The previously stored value for this instance/key combination, or {@code null} if there was none.
+	 */
 	public static Object setAdditionalInstanceField(Object obj, String key, Object value) {
 		if (obj == null)
 			throw new NullPointerException("object must not be null");
@@ -1080,6 +1391,13 @@ public class XposedHelpers {
 		}
 	}
 
+	/**
+	 * Returns a value which was stored with {@link #setAdditionalInstanceField}.
+	 *
+	 * @param obj The object instance for which the value has been stored.
+	 * @param key The key in the value map for this object instance.
+	 * @return The stored value for this instance/key combination, or {@code null} if there is none.
+	 */
 	public static Object getAdditionalInstanceField(Object obj, String key) {
 		if (obj == null)
 			throw new NullPointerException("object must not be null");
@@ -1098,6 +1416,13 @@ public class XposedHelpers {
 		}
 	}
 
+	/**
+	 * Removes and returns a value which was stored with {@link #setAdditionalInstanceField}.
+	 *
+	 * @param obj The object instance for which the value has been stored.
+	 * @param key The key in the value map for this object instance.
+	 * @return The previously stored value for this instance/key combination, or {@code null} if there was none.
+	 */
 	public static Object removeAdditionalInstanceField(Object obj, String key) {
 		if (obj == null)
 			throw new NullPointerException("object must not be null");
@@ -1116,33 +1441,43 @@ public class XposedHelpers {
 		}
 	}
 
+	/** Like {@link #setAdditionalInstanceField}, but the value is stored for the class of {@code obj}. */
 	public static Object setAdditionalStaticField(Object obj, String key, Object value) {
 		return setAdditionalInstanceField(obj.getClass(), key, value);
 	}
 
+	/** Like {@link #getAdditionalInstanceField}, but the value is returned for the class of {@code obj}. */
 	public static Object getAdditionalStaticField(Object obj, String key) {
 		return getAdditionalInstanceField(obj.getClass(), key);
 	}
 
+	/** Like {@link #removeAdditionalInstanceField}, but the value is removed and returned for the class of {@code obj}. */
 	public static Object removeAdditionalStaticField(Object obj, String key) {
 		return removeAdditionalInstanceField(obj.getClass(), key);
 	}
 
+	/** Like {@link #setAdditionalInstanceField}, but the value is stored for {@code clazz}. */
 	public static Object setAdditionalStaticField(Class<?> clazz, String key, Object value) {
 		return setAdditionalInstanceField(clazz, key, value);
 	}
 
+	/** Like {@link #setAdditionalInstanceField}, but the value is returned for {@code clazz}. */
 	public static Object getAdditionalStaticField(Class<?> clazz, String key) {
 		return getAdditionalInstanceField(clazz, key);
 	}
 
+	/** Like {@link #setAdditionalInstanceField}, but the value is removed and returned for {@code clazz}. */
 	public static Object removeAdditionalStaticField(Class<?> clazz, String key) {
 		return removeAdditionalInstanceField(clazz, key);
 	}
 
 	//#################################################################################################
 	/**
-	 * Load an asset from a resource and return the content as byte array.
+	 * Loads an asset from a resource object and returns the content as {@code byte} array.
+	 *
+	 * @param res The resources from which the asset should be loaded.
+	 * @param path The path to the asset, as in {@link AssetManager#open}.
+	 * @return The content of the asset.
 	 */
 	public static byte[] assetAsByteArray(Resources res, String path) throws IOException {
 		InputStream is = res.getAssets().open(path);
@@ -1159,14 +1494,14 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Returns the lowercase string representation of the file's MD5 sum.
+	 * Returns the lowercase hex string representation of a file's MD5 hash sum.
 	 */
 	public static String getMD5Sum(String file) throws IOException {
 		try {
 			MessageDigest digest = MessageDigest.getInstance("MD5");
 			InputStream is = new FileInputStream(file);
 			byte[] buffer = new byte[8192];
-			int read = 0;
+			int read;
 			while ((read = is.read(buffer)) > 0) {
 				digest.update(buffer, 0, read);
 			}
@@ -1181,7 +1516,14 @@ public class XposedHelpers {
 
 	//#################################################################################################
 	/**
-	 * Increment the depth counter for the given method.
+	 * Increments the depth counter for the given method.
+	 *
+	 * <p>The intention of the method depth counter is to keep track of the call depth for recursive
+	 * methods, e.g. to override parameters only for the outer call. The Xposed framework uses this
+	 * to load drawable replacements only once per call, even when multiple
+	 * {@link Resources#getDrawable} variants call each other.
+	 *
+	 * @param method The method name. Should be prefixed with a unique, module-specific string.
 	 * @return The updated depth.
 	 */
 	public static int incrementMethodDepth(String method) {
@@ -1189,7 +1531,10 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Decrement the depth counter for the given method.
+	 * Decrements the depth counter for the given method.
+	 * See {@link #incrementMethodDepth} for details.
+	 *
+	 * @param method The method name. Should be prefixed with a unique, module-specific string.
 	 * @return The updated depth.
 	 */
 	public static int decrementMethodDepth(String method) {
@@ -1197,8 +1542,11 @@ public class XposedHelpers {
 	}
 
 	/**
-	 * Get the depth counter for the given method.
-	 * @return The depth.
+	 * Returns the current depth counter for the given method.
+	 * See {@link #incrementMethodDepth} for details.
+	 *
+	 * @param method The method name. Should be prefixed with a unique, module-specific string.
+	 * @return The updated depth.
 	 */
 	public static int getMethodDepth(String method) {
 		return getMethodDepthCounter(method).get().get();

@@ -1,14 +1,6 @@
 package de.robv.android.xposed;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
-
-import org.xmlpull.v1.XmlPullParserException;
-
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Environment;
@@ -16,6 +8,15 @@ import android.preference.PreferenceManager;
 import android.util.Log;
 
 import com.android.internal.util.XmlUtils;
+
+import org.xmlpull.v1.XmlPullParserException;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 import de.robv.android.xposed.services.FileResult;
 
@@ -75,6 +76,7 @@ public final class XSharedPreferences implements SharedPreferences {
 	 *
 	 * @return {@code true} in case the file could be made world-readable.
 	 */
+	@SuppressLint("SetWorldReadable")
 	public boolean makeWorldReadable() {
 		if (!SELinuxHelper.getAppDataFileService().hasDirectFileAccess())
 			return false; // It doesn't make much sense to make the file readable if we wouldn't be able to access it anyway.
@@ -190,6 +192,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	public Map<String, ?> getAll() {
 		synchronized (this) {
@@ -198,6 +201,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	public String getString(String key, String defValue) {
 		synchronized (this) {
@@ -207,6 +211,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	@SuppressWarnings("unchecked")
 	public Set<String> getStringSet(String key, Set<String> defValues) {
@@ -217,6 +222,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	public int getInt(String key, int defValue) {
 		synchronized (this) {
@@ -226,6 +232,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	public long getLong(String key, long defValue) {
 		synchronized (this) {
@@ -235,6 +242,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	public float getFloat(String key, float defValue) {
 		synchronized (this) {
@@ -244,6 +252,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	public boolean getBoolean(String key, boolean defValue) {
 		synchronized (this) {
@@ -253,6 +262,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @hide */
 	@Override
 	public boolean contains(String key) {
 		synchronized (this) {
@@ -261,16 +271,22 @@ public final class XSharedPreferences implements SharedPreferences {
 		}
 	}
 
+	/** @deprecated Not supported by this implementation. */
+	@Deprecated
 	@Override
 	public Editor edit() {
 		throw new UnsupportedOperationException("read-only implementation");
 	}
 
+	/** @deprecated Not supported by this implementation. */
+	@Deprecated
 	@Override
 	public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener listener) {
 		throw new UnsupportedOperationException("listeners are not supported in this implementation");
 	}
 
+	/** @deprecated Not supported by this implementation. */
+	@Deprecated
 	@Override
 	public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener listener) {
 		throw new UnsupportedOperationException("listeners are not supported in this implementation");
