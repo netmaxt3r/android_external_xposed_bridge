@@ -80,6 +80,7 @@ public final class XposedBridge {
 	private static int runtime = 0;
 	private static final int RUNTIME_DALVIK = 1;
 	private static final int RUNTIME_ART = 2;
+	private static final String INSTANT_RUN_CLASS = "com.android.tools.fd.runtime.BootstrapApplication";
 
 	private static boolean disableHooks = false;
 	private static boolean disableResources = false;
@@ -91,12 +92,9 @@ public final class XposedBridge {
 	private static final String BASE_DIR = "/data/data/" + INSTALLER_PACKAGE_NAME + "/";
 
 	// built-in handlers
-	private static final Map<Member, CopyOnWriteSortedSet<XC_MethodHook>> sHookedMethodCallbacks
-									= new HashMap<Member, CopyOnWriteSortedSet<XC_MethodHook>>();
-	private static final CopyOnWriteSortedSet<XC_LoadPackage> sLoadedPackageCallbacks
-									= new CopyOnWriteSortedSet<XC_LoadPackage>();
-	private static final CopyOnWriteSortedSet<XC_InitPackageResources> sInitPackageResourcesCallbacks
-									= new CopyOnWriteSortedSet<XC_InitPackageResources>();
+	private static final Map<Member, CopyOnWriteSortedSet<XC_MethodHook>> sHookedMethodCallbacks = new HashMap<>();
+	private static final CopyOnWriteSortedSet<XC_LoadPackage> sLoadedPackageCallbacks = new CopyOnWriteSortedSet<>();
+	private static final CopyOnWriteSortedSet<XC_InitPackageResources> sInitPackageResourcesCallbacks = new CopyOnWriteSortedSet<>();
 
 	private XposedBridge() {}
 
@@ -161,10 +159,11 @@ public final class XposedBridge {
 	 * Hook some methods which we want to create an easier interface for developers.
 	 */
 	private static void initForZygote() throws Throwable {
-		final HashSet<String> loadedPackagesInProcess = new HashSet<String>(1);
+		final HashSet<String> loadedPackagesInProcess = new HashSet<>(1);
 
 		// normal process initialization (for new Activity, Service, BroadcastReceiver etc.)
 		findAndHookMethod(ActivityThread.class, "handleBindApplication", "android.app.ActivityThread.AppBindData", new XC_MethodHook() {
+			@Override
 			protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
 				ActivityThread activityThread = (ActivityThread) param.thisObject;
 				ApplicationInfo appInfo = (ApplicationInfo) getObjectField(param.args[0], "appInfo");
@@ -235,14 +234,12 @@ public final class XposedBridge {
 							lpparam.isFirstApplication = true;
 							XC_LoadPackage.callAll(lpparam);
 
-							if (Build.VERSION.SDK_INT >= 21) {
-								// Huawei
-								Class<?> clsHwPackageManager = findClassIfExists("com.android.server.pm.HwPackageManagerService", cl);
-								if (clsHwPackageManager != null) {
-									findAndHookMethod(clsHwPackageManager, "isOdexMode", XC_MethodReplacement.returnConstant(false));
-									String className = "com.android.server.pm." + (Build.VERSION.SDK_INT >= 23 ? "PackageDexOptimizer" : "PackageManagerService");
-									findAndHookMethod(className, cl, "dexEntryExists", String.class, XC_MethodReplacement.returnConstant(true));
-								}
+							// Huawei
+							Class<?> clsHwPackageManager = findClassIfExists("com.android.server.pm.HwPackageManagerService", cl);
+							if (clsHwPackageManager != null) {
+								findAndHookMethod(clsHwPackageManager, "isOdexMode", XC_MethodReplacement.returnConstant(false));
+								String className = "com.android.server.pm." + (Build.VERSION.SDK_INT >= 23 ? "PackageDexOptimizer" : "PackageManagerService");
+								findAndHookMethod(className, cl, "dexEntryExists", String.class, XC_MethodReplacement.returnConstant(true));
 							}
 						}
 					});
@@ -304,7 +301,7 @@ public final class XposedBridge {
 
 		final Class<?> classGTLR;
 		final Class<?> classResKey;
-		final ThreadLocal<Object> latestResKey = new ThreadLocal<Object>();
+		final ThreadLocal<Object> latestResKey = new ThreadLocal<>();
 		final String[] conflictingPackages = { "com.sygic.aura" };
 
 		if (Build.VERSION.SDK_INT <= 18) {
@@ -444,11 +441,17 @@ public final class XposedBridge {
 			return;
 		}
 
+		ClassLoader topClassLoader = BOOTCLASSLOADER;
+		ClassLoader parent;
+		while ((parent = topClassLoader.getParent()) != null) {
+			topClassLoader = parent;
+		}
+
 		InputStream stream = service.getFileInputStream(filename);
 		BufferedReader apks = new BufferedReader(new InputStreamReader(stream));
 		String apk;
 		while ((apk = apks.readLine()) != null) {
-			loadModule(apk);
+			loadModule(apk, topClassLoader);
 		}
 		apks.close();
 	}
@@ -457,18 +460,29 @@ public final class XposedBridge {
 	 * Load a module from an APK by calling the init(String) method for all classes defined
 	 * in <code>assets/xposed_init</code>.
 	 */
-	private static void loadModule(String apk) {
+	private static void loadModule(String apk, ClassLoader topClassLoader) {
 		log("Loading modules from " + apk);
 
 		if (!new File(apk).exists()) {
-			log("  File does not exist");
+			Log.e(TAG, "  File does not exist");
 			return;
+		}
+
+		ClassLoader mclWithoutXposedBridge = new PathClassLoader(apk, topClassLoader);
+		if (findClassIfExists(INSTANT_RUN_CLASS, mclWithoutXposedBridge) != null) {
+			Log.e(TAG, "  Cannot load module, please disable \"Instant Run\" in Android Studio.");
+			return;
+		}
+		if (findClassIfExists(XposedBridge.class.getName(), mclWithoutXposedBridge) != null) {
+			Log.w(TAG, "  The Xposed API classes are compiled into the module's APK.");
+			Log.w(TAG, "  This may cause strange issues and must be fixed by the module developer.");
+			Log.w(TAG, "  For details, see: http://api.xposed.info/using.html");
 		}
 
 		ClassLoader mcl = new PathClassLoader(apk, BOOTCLASSLOADER);
 		InputStream is = mcl.getResourceAsStream("assets/xposed_init");
 		if (is == null) {
-			log("assets/xposed_init not found in the APK");
+			Log.e(TAG, "assets/xposed_init not found in the APK");
 			return;
 		}
 
@@ -485,10 +499,10 @@ public final class XposedBridge {
 					Class<?> moduleClass = mcl.loadClass(moduleClassName);
 
 					if (!IXposedMod.class.isAssignableFrom(moduleClass)) {
-						log ("    This class doesn't implement any sub-interface of IXposedMod, skipping it");
+						Log.e(TAG, "    This class doesn't implement any sub-interface of IXposedMod, skipping it");
 						continue;
 					} else if (disableResources && IXposedHookInitPackageResources.class.isAssignableFrom(moduleClass)) {
-						log ("    This class requires resource-related hooks (which are disabled), skipping it.");
+						Log.e(TAG, "    This class requires resource-related hooks (which are disabled), skipping it.");
 						continue;
 					}
 
@@ -580,7 +594,7 @@ public final class XposedBridge {
 		synchronized (sHookedMethodCallbacks) {
 			callbacks = sHookedMethodCallbacks.get(hookMethod);
 			if (callbacks == null) {
-				callbacks = new CopyOnWriteSortedSet<XC_MethodHook>();
+				callbacks = new CopyOnWriteSortedSet<>();
 				sHookedMethodCallbacks.put(hookMethod, callbacks);
 				newMethod = true;
 			}
@@ -645,7 +659,7 @@ public final class XposedBridge {
 	 */
 	@SuppressWarnings("UnusedReturnValue")
 	public static Set<XC_MethodHook.Unhook> hookAllMethods(Class<?> hookClass, String methodName, XC_MethodHook callback) {
-		Set<XC_MethodHook.Unhook> unhooks = new HashSet<XC_MethodHook.Unhook>();
+		Set<XC_MethodHook.Unhook> unhooks = new HashSet<>();
 		for (Member method : hookClass.getDeclaredMethods())
 			if (method.getName().equals(methodName))
 				unhooks.add(hookMethod(method, callback));
@@ -661,7 +675,7 @@ public final class XposedBridge {
 	 */
 	@SuppressWarnings("UnusedReturnValue")
 	public static Set<XC_MethodHook.Unhook> hookAllConstructors(Class<?> hookClass, XC_MethodHook callback) {
-		Set<XC_MethodHook.Unhook> unhooks = new HashSet<XC_MethodHook.Unhook>();
+		Set<XC_MethodHook.Unhook> unhooks = new HashSet<>();
 		for (Member constructor : hookClass.getDeclaredConstructors())
 			unhooks.add(hookMethod(constructor, callback));
 		return unhooks;
